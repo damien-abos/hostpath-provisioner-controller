@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${ACCOUNT_NAME}
+  namespace: ${NAMESPACE}
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: run-${ACCOUNT_NAME}
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: run-${ACCOUNT_NAME}
+subjects:
+  - kind: ServiceAccount
+    name: ${ACCOUNT_NAME}
+    namespace: ${NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: run-${ACCOUNT_NAME}
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-${ACCOUNT_NAME}
+  namespace: ${NAMESPACE}
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: leader-locking-${ACCOUNT_NAME}
+  namespace: ${NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: ${ACCOUNT_NAME}
+    namespace: ${NAMESPACE}
+roleRef:
+  kind: Role
+  name: leader-locking-${ACCOUNT_NAME}
+  apiGroup: rbac.authorization.k8s.io

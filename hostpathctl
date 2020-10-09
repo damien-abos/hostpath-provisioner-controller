@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+
+# Kubernetes hostpath provisioner controller
+#
+# Copyright 2020 Damien Abos All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -o errexit -o pipefail -o noclobber -o nounset
+
+DIRNAME=$(dirname $0)
+
+usage() {
+    echo "$(basename $0) controls hostpath storage provisioners."
+    echo ""
+    echo "Usage: $(basename $0) <command> [options] <storage>"
+    echo ""
+    echo "Available Commands:"
+    echo "  create  Create a storageclass and its provisioner"
+    echo "  delete  Delete a storageclass and its provisioner"
+    echo ""
+    echo "Options:"
+    echo "    -a, --account=<storage>-account   indicate the security account allowed to create persistent volumes"
+    echo "    -h, --help                        print this help message"
+    echo "    -i, --image                       indicate the pod provider image"
+    echo "    -n, --namespace=default           indicate the target namespace"
+    echo "    -p, --path=/tmp/<storage>         indicate the path where persistent volumes will be provisioned on cluster node. It must already exists."
+    echo "    -s, --service=<storage>-provider  indicate the pod provider name"
+    echo "    --default                         annotate the StorageClass as default"
+    echo "    --dry-run='none'                  must be \"none\", \"server\", or \"client\"."
+    echo ""
+    echo "  # create the hostpath storageclass with its provisioner"
+    echo "  $(basename $0) create hostpath -n kube-system"
+    echo ""
+    echo "  # delete the hostpath storageclass with its provisioner"
+    echo "  $(basename $0) delete hostpath -n kube-system"
+}
+
+create() {
+    envsubst "${SUBSTFMT}" < ${DIRNAME}/rbac.yaml | kubectl apply ${DRYRUN} -f -
+    export ACCOUNT_TOKEN=$ACCOUNT_NAME-XXXX
+    if [ -z "${DRYRUN}" ]; then
+        export ACCOUNT_TOKEN=$(kubectl get serviceaccount ${ACCOUNT_NAME} -n ${NAMESPACE} -o json | jq ".secrets[0].name")
+    fi
+    envsubst "${SUBSTFMT}" < ${DIRNAME}/storageclass.yaml | kubectl apply ${DRYRUN} -f -
+    envsubst "${SUBSTFMT}" < ${DIRNAME}/storage-provisioner.yaml | kubectl apply ${DRYRUN} -f -
+    echo "INFO: the path \"${STORAGE_PATH}\" must exists on cluster nodes."
+}
+
+delete() {
+    envsubst "${SUBSTFMT}" < ${DIRNAME}/storage-provisioner.yaml | kubectl delete ${DRYRUN} -f -
+    export ACCOUNT_TOKEN=$ACCOUNT_NAME-XXXX
+    if [ -z "${DRYRUN}" ]; then
+        export ACCOUNT_TOKEN=$(kubectl get serviceaccount ${ACCOUNT_NAME} -n ${NAMESPACE} -o json | jq ".secrets[0].name")
+    fi
+    envsubst  "${SUBSTFMT}" < ${DIRNAME}/storageclass.yaml | kubectl delete ${DRYRUN} -f -
+    envsubst  "${SUBSTFMT}" < ${DIRNAME}/rbac.yaml | kubectl delete ${DRYRUN} -f -
+    echo "INFO: the path \"${STORAGE_PATH}\" shall be cleanned manually on cluster nodes."
+}
+
+check-dependencies() {
+    dependencyerror=0
+    if ! command -v kubectl > /dev/null ; then
+        echo "kubectl is missing. Please install and configure kubectl."
+        dependencyerror=1
+    elif ! kubectl version > /dev/null ; then
+        echo "kubectl is not properly configured"
+        dependencyerror=2
+    fi
+
+    if ! command -v jq > /dev/null ; then
+        echo "jq is misssing. Please install kubectl."
+        dependencyerror=1
+    fi
+
+    if [ ! $dependencyerror = 0 ] ; then
+        exit "${dependencyerror}"
+    fi
+}
+
+check-dependencies
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    -n=*|--namespace=*)
+    STORAGE_NAMESPACE="${key#*=}"
+    shift
+    ;;
+    -n|--namespace)
+    STORAGE_NAMESPACE="$2"
+    shift
+    shift
+    ;;
+    -a=*|--account=*)
+    STORAGE_ACCOUNT_NAME="${key#*=}"
+    shift
+    ;;
+    -a|--account)
+    STORAGE_ACCOUNT_NAME="$2"
+    shift
+    shift
+    ;;
+    -s=*|--service=*)
+    STORAGE_PROVISIONER_NAME="${key#*=}"
+    shift
+    ;;
+    -s|--service)
+    STORAGE_PROVISIONER_NAME="$2"
+    shift
+    shift
+    ;;
+    -p=*|--path=*)
+    STORAGE_PROVISIONER_PATH="${key#*=}"
+    shift
+    ;;
+    -p|--path)
+    STORAGE_PROVISIONER_PATH="$2"
+    shift
+    shift
+    ;;
+    -i=*|--image=*)
+    STORAGE_PROVISIONER_IMAGE="${key#*=}"
+    shift
+    ;;
+    -i|--image)
+    STORAGE_PROVISIONER_IMAGE="$2"
+    shift
+    shift
+    ;;
+    --default=*)
+    STORAGE_IS_DEFAULT="${key#*=}"
+    shift
+    ;;
+    --default)
+    STORAGE_IS_DEFAULT=true
+    shift
+    ;;
+    --dry-run=*)
+    DRYRUN=$key
+    shift
+    ;;
+    --dry-run)
+    DRYRUN="--dry-run=client"
+    shift
+    ;;
+    -h|--help)
+    usage
+    exit
+    ;;
+    *)    # unknown option
+    POSITIONAL+=("$1") # save it in an array for later
+    shift # past argument
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+if [[ $# -ne 2 ]]; then
+    usage
+    exit 4
+fi
+
+STORAGE_NAME=$2
+NAMESPACE=${STORAGE_NAMESPACE:-default}
+ACCOUNT_NAME=${STORAGE_ACCOUNT_NAME:-${STORAGE_NAME}-account}
+PROVISIONER_NAME=${STORAGE_PROVISIONER_NAME:-${STORAGE_NAME}-provisioner}
+PROVISIONER_IMAGE=${STORAGE_PROVISIONER_IMAGE:-"gcr.io/k8s-minikube/storage-provisioner:v3"}
+STORAGE_PATH=${STORAGE_PROVISIONER_PATH:-/tmp/${STORAGE_NAME}}
+STORAGE_IS_DEFAULT=${STORAGE_IS_DEFAULT:-false}
+DRYRUN=${DRYRUN:-}
+
+export STORAGE_NAME NAMESPACE ACCOUNT_NAME PROVISIONER_NAME PROVISIONER_IMAGE STORAGE_PATH STORAGE_IS_DEFAULT
+SUBSTFMT='${STORAGE_NAME} ${NAMESPACE} ${ACCOUNT_NAME} ${PROVISIONER_NAME} ${PROVISIONER_IMAGE} ${STORAGE_PATH} ${STORAGE_IS_DEFAULT} ${ACCOUNT_TOKEN}'
+
+case $1 in
+    create)
+    create
+    ;;
+    delete)
+    delete
+    ;;
+    *)
+    usage
+    exit 4
+esac
